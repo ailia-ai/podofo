@@ -294,7 +294,7 @@ PdfTokenizer::PdfLiteralDataType PdfTokenizer::DetermineDataType(InputStreamDevi
             if (dataType == PdfLiteralDataType::Real)
             {
                 double val;
-                if (std::from_chars(token.data(), token.data() + token.length(), val, chars_format::fixed).ec != std::errc())
+                if (PODOFO_FROM_CHARS_DOUBLE(token.data(), token.data() + token.length(), val, chars_format::fixed).ec != std::errc())
                 {
                     // Don't consume the token
                     this->EnqueueToken(token, tokenType);

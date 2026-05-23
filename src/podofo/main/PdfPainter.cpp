@@ -1096,17 +1096,15 @@ void PdfPainter::writeTextState()
     if (textState.Font != nullptr)
         setFont(textState.Font, textState.FontSize);
 
-    if (textState.FontScale != 1)
-        setFontScale(textState.FontScale);
-
-    if (textState.CharSpacing != 0)
-        setCharSpacing(textState.CharSpacing);
-
-    if (textState.WordSpacing != 0)
-        setWordSpacing(textState.WordSpacing);
-
-    if (textState.RenderingMode != PdfTextRenderingMode::Fill)
-        setTextRenderingMode(textState.RenderingMode);
+    // NOTE: Always emit text state operators (Tz, Tc, Tw, Tr) even for
+    // default values. PDF text state persists across BT/ET blocks, so
+    // a previous block's non-default value would leak into the current
+    // block if we skip emitting the default. The set*() methods already
+    // optimize by checking EmittedTextState to avoid truly redundant writes.
+    setFontScale(textState.FontScale);
+    setCharSpacing(textState.CharSpacing);
+    setWordSpacing(textState.WordSpacing);
+    setTextRenderingMode(textState.RenderingMode);
 }
 
 void PdfPainter::addToPageResources(const PdfName& type, const PdfName& identifier, const PdfObject& obj)

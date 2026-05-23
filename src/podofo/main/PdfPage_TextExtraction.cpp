@@ -365,6 +365,14 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                         context.States.Current->PdfState.WordSpacing = content.Stack[0].GetReal();
                         break;
                     }
+                    // scale Tz : Set the horizontal scaling, T_h
+                    case PdfOperator::Tz:
+                    {
+                        // PDF spec: Tz operand is a percentage (e.g., 80 means 80%)
+                        // PdfTextState::FontScale is stored as a fraction (e.g., 0.8)
+                        context.States.Current->PdfState.FontScale = content.Stack[0].GetReal() / 100.0;
+                        break;
+                    }
                     // q : Save the current graphics state
                     case PdfOperator::q:
                     {

@@ -31,9 +31,13 @@ PdfEncoding PdfEncodingFactory::CreateEncoding(const PdfObject& fontObj, const P
     if (encodingObj != nullptr)
         encoding = createEncodingMap(*encodingObj, metrics);
 
+    bool usedImplicitEncoding = false;
     PdfEncodingMapConstPtr implicitEncoding;
     if (encoding == nullptr && metrics.TryGetImplicitEncoding(implicitEncoding))
+    {
         encoding = implicitEncoding;
+        usedImplicitEncoding = true;
+    }
 
     // TODO: Implement full text extraction, including search in predefined
     // CMap(s) as described in Pdf Reference and here https://stackoverflow.com/a/26910569/213871
@@ -67,6 +71,24 @@ PdfEncoding PdfEncodingFactory::CreateEncoding(const PdfObject& fontObj, const P
         {
             // As a fallback, create an identity encoding of the size size of the /ToUnicode mapping
             encoding = std::make_shared<PdfIdentityEncoding>(toUnicode->GetLimits().MaxCodeSize);
+        }
+    }
+
+    // When the encoding came from FreeType's implicit encoding (not from the
+    // PDF's /Encoding dictionary) and a /ToUnicode map is present, the implicit
+    // encoding's MaxCodeSize may be wrong. FreeType can report Type1 fonts as
+    // CMap-type with MaxCodeSize=2, but PDF Type1 fonts always use 1-byte
+    // character codes. If the code sizes disagree, trust the /ToUnicode map's
+    // code size since it directly corresponds to the content stream's encoding.
+    // This fix is NOT applied when /Encoding is explicitly specified in the PDF,
+    // which is authoritative (e.g., Type0/CID fonts with 2-byte codes).
+    if (usedImplicitEncoding && toUnicode != nullptr)
+    {
+        auto toUnicodeMaxCodeSize = toUnicode->GetLimits().MaxCodeSize;
+        auto encodingMaxCodeSize = encoding->GetLimits().MaxCodeSize;
+        if (toUnicodeMaxCodeSize != encodingMaxCodeSize)
+        {
+            encoding = std::make_shared<PdfIdentityEncoding>(toUnicodeMaxCodeSize);
         }
     }
 
