@@ -33,7 +33,8 @@ struct PdfTextEntry final
     double Y;
     double Length;
     nullable<Rect> BoundingBox;
-    double TextMatrix[6];
+    double TextMatrix[6];       // Combined T_m * CTM (page coordinates)
+    double LocalTextMatrix[6];  // T_m only (without CTM, for writing back)
     double FontSize;
     std::string FontName;
     double FontScale = 1;
