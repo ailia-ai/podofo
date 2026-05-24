@@ -16,7 +16,7 @@
 
 #define THROW_LIBXML_EXCEPTION(msg)\
 {\
-    xmlErrorPtr error_ = xmlGetLastError();\
+    const xmlError* error_ = xmlGetLastError();\
     if (error_ == nullptr)\
         PODOFO_RAISE_ERROR_INFO(PdfErrorCode::XmpMetadata, msg);\
     else\

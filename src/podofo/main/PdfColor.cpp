@@ -683,7 +683,7 @@ PdfColor PdfColor::FromString(const string_view& name)
     if (isdigit(name[0]) || name[0] == '.')
     {
         double grayVal = 0.0;
-        if (std::from_chars(name.data() + 1, name.data() + name.size(), grayVal, chars_format::fixed).ec != std::errc())
+        if (PODOFO_FROM_CHARS_DOUBLE(name.data() + 1, name.data() + name.size(), grayVal, chars_format::fixed).ec != std::errc())
             PODOFO_RAISE_ERROR_INFO(PdfErrorCode::NoNumber, "Could not read number");
 
         return PdfColor(grayVal);
