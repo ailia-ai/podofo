@@ -522,9 +522,11 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                 context.XObjectStateIndices.pop_back();
                 break;
             }
-            default:
+            case PdfContentType::Unknown:
+            case PdfContentType::UnexpectedKeyword:
             {
-                throw runtime_error("Unsupported PdfContentType");
+                // Ignore unknown or unexpected content types
+                break;
             }
         }
     }

@@ -385,7 +385,7 @@ PdfTokenizer::PdfLiteralDataType PdfTokenizer::DetermineDataType(InputStreamDevi
         case PdfTokenType::Slash:
             return PdfLiteralDataType::Name;
         default:
-            PODOFO_RAISE_ERROR_INFO(PdfErrorCode::InvalidEnumValue, "Unsupported token at this context");
+            return PdfLiteralDataType::Unknown;
     }
 }
 
