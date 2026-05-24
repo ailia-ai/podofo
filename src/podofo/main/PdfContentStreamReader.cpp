@@ -359,7 +359,12 @@ bool PdfContentStreamReader::tryReadInlineImgData(charbuff& data)
     if (!m_inputs.back().Device->Read(ch))
         return false;
 
-    // Read "EI"
+    // Read until we find the real "EI" end marker.
+    // The challenge is that "EI" followed by whitespace can appear inside
+    // the image data (especially in ASCII85 encoded data).
+    // We use a heuristic: after finding "EI" + whitespace, we read ahead
+    // a few more bytes and check if they look like valid PDF content
+    // (e.g. "Q", "q", "BT", "cm", numbers, etc.) rather than binary/encoded data.
     enum class ReadEIStatus
     {
         ReadE,
@@ -367,13 +372,6 @@ bool PdfContentStreamReader::tryReadInlineImgData(charbuff& data)
         ReadWhiteSpace
     };
 
-    // NOTE: This is a better version of the previous approach
-    // and still is wrong since the Pdf specification is broken
-    // with this regard. The dictionary should have a /Length
-    // key with the length of the data, and it's a requirement
-    // in Pdf 2.0 specification (ISO 32000-2). To handle better
-    // the situation the only approach would be to use more
-    // comprehensive heuristic, similarly to what pdf.js does
     ReadEIStatus status = ReadEIStatus::ReadE;
     unsigned readCount = 0;
     while (m_inputs.back().Device->Read(ch))
@@ -400,8 +398,90 @@ bool PdfContentStreamReader::tryReadInlineImgData(charbuff& data)
             {
                 if (PdfTokenizer::IsWhitespace(ch))
                 {
-                    data = bufferview(m_buffer->data(), readCount - 2);
-                    return true;
+                    // Found "EI" + whitespace candidate.
+                    // Read the next whitespace-delimited token and check if it's
+                    // a valid PDF operator (Q, q, BT, ET, cm, re, etc.)
+                    char lookahead[64];
+                    unsigned lookaheadLen = 0;
+                    bool isRealEI = false;
+
+                    // Skip additional whitespace
+                    while (lookaheadLen == 0 && m_inputs.back().Device->Read(lookahead[0]))
+                    {
+                        if (!PdfTokenizer::IsWhitespace(lookahead[0]))
+                        {
+                            lookaheadLen = 1;
+                            break;
+                        }
+                    }
+
+                    // Read until next whitespace or special char to get a full token
+                    while (lookaheadLen < 63 && m_inputs.back().Device->Read(lookahead[lookaheadLen]))
+                    {
+                        if (PdfTokenizer::IsWhitespace(lookahead[lookaheadLen])
+                            || lookahead[lookaheadLen] == '/' || lookahead[lookaheadLen] == '<'
+                            || lookahead[lookaheadLen] == '[' || lookahead[lookaheadLen] == '(')
+                            break;
+                        lookaheadLen++;
+                    }
+
+                    // Check if the token is a valid PDF operator or number
+                    if (lookaheadLen > 0 && lookaheadLen <= 10)
+                    {
+                        std::string token(lookahead, lookaheadLen);
+                        // Common PDF operators that appear after inline images
+                        static const char* validOps[] = {
+                            "Q", "q", "BT", "ET", "cm", "re", "BI", "Do", "S", "f",
+                            "W", "n", "m", "l", "c", "h", "gs", "CS", "cs", "BX", "EX",
+                            nullptr
+                        };
+                        for (const char** op = validOps; *op != nullptr; op++)
+                        {
+                            if (token == *op)
+                            {
+                                isRealEI = true;
+                                break;
+                            }
+                        }
+                        // Also valid if it's a number (operand for next operator)
+                        if (!isRealEI)
+                        {
+                            bool isNum = true;
+                            for (unsigned k = 0; k < lookaheadLen; k++)
+                            {
+                                char c = lookahead[k];
+                                if (!((c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+'))
+                                {
+                                    isNum = false;
+                                    break;
+                                }
+                            }
+                            if (isNum)
+                                isRealEI = true;
+                        }
+                    }
+
+                    if (isRealEI)
+                    {
+                        data = bufferview(m_buffer->data(), readCount - 2);
+                        return true;
+                    }
+                    else
+                    {
+                        // False positive - add whitespace + lookahead to buffer
+                        if (m_buffer->size() <= readCount + lookaheadLen + 2)
+                            m_buffer->resize((readCount + lookaheadLen + 3) * 2);
+
+                        m_buffer->data()[readCount] = ch;
+                        readCount++;
+                        for (unsigned k = 0; k < lookaheadLen; k++)
+                        {
+                            m_buffer->data()[readCount] = lookahead[k];
+                            readCount++;
+                        }
+                        status = ReadEIStatus::ReadE;
+                        continue;
+                    }
                 }
                 else
                     status = ReadEIStatus::ReadE;
