@@ -46,18 +46,14 @@ enum class PdfKeyLength
     L80 = 80,
     L96 = 96,
     L128 = 128,
-#ifdef PODOFO_HAVE_LIBIDN
     L256 = 256
-#endif //PODOFO_HAVE_LIBIDN
 };
 
-#ifdef PODOFO_HAVE_LIBIDN
 enum class PdfAESV3Revision
 {
     R5 = 5,
     R6 = 6,
 };
-#endif //PODOFO_HAVE_LIBIDN
 
 /** Set user permissions/restrictions on a document
  */
@@ -91,10 +87,8 @@ enum class PdfEncryptAlgorithm
     RC4V1 = 1,      ///< RC4 Version 1 encryption using a 40bit key
     RC4V2 = 2,      ///< RC4 Version 2 encryption using a key with 40-128bit
     AESV2 = 4,      ///< AES encryption with a 128 bit key (PDF1.6)
-#ifdef PODOFO_HAVE_LIBIDN
     AESV3 = 8,      ///< AES encryption with a 256 bit key (PDF1.7 extension 3) - Support added by P. Zent
     AESV3R6 = 16,   ///< AES encryption with a 256 bit key, Revision 6 (PDF1.7 extension 8, PDF 2.0)
-#endif //PODOFO_HAVE_LIBIDN
 };
 
 /** A class that is used to encrypt a PDF file and
@@ -403,8 +397,6 @@ private:
     static PdfEncryptAlgorithm s_EnabledEncryptionAlgorithms; // Or'ed int containing the enabled encryption algorithms
 };
 
-#ifdef PODOFO_HAVE_LIBIDN
-
 /** A pure virtual class that is used to encrypt a PDF file (AES-256)
  *  This class is the base for classes that implement algorithms based on SHA hashes
  *
@@ -464,15 +456,6 @@ protected:
     unsigned char m_oeValue[32];        // OE entry in pdf document
     unsigned char m_permsValue[16];     // Perms entry in pdf document
 };
-
-/** A pure virtual class that is used to encrypt a PDF file (RC4, AES-128)
- *  This class is the base for classes that implement algorithms based on MD5 hashes
- *
- *  Client code is working only with PdfEncrypt class and knows nothing
- *	about PdfEncrypt*, it is created through CreatePdfEncrypt factory method
- *
- */
-#endif // PODOFO_HAVE_LIBIDN
 
 /** A pure virtual class that is used to encrypt a PDF file (AES-128/256)
  *  This class is the base for classes that implement algorithms based on AES
@@ -612,8 +595,6 @@ protected:
     bool Authenticate(const std::string_view& password, const std::string_view& documentId) override;
 };
 
-#ifdef PODOFO_HAVE_LIBIDN
-
 /** A class that is used to encrypt a PDF file (AES-256)
  *
  *  Client code is working only with PdfEncrypt class and knows nothing
@@ -647,8 +628,6 @@ protected:
 
     void GenerateEncryptionKey(const std::string_view& documentId) override;
 };
-
-#endif // PODOFO_HAVE_LIBIDN
 
 /** A class that is used to encrypt a PDF file (RC4 40-bit and 128-bit)
  *
