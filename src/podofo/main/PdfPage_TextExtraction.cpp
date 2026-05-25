@@ -754,7 +754,7 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
         textEntries.push_back(PdfTextEntry{ str, pageIndex,
             strPosition.X, strPosition.Y, strLength, bbox,
             {1.0, 0.0, 0.0, 1.0, 0.0, 0.0},
-            {1.0, 0.0, 0.0, 1.0, 0.0, 0.0}, textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
+            textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
             textState.PdfState.FontScale, textState.PdfState.CharSpacing, textState.PdfState.WordSpacing,
             textState.PdfState.Font->GetStringLength(str, textState.PdfState),
             textState.PdfState.Font->GetLineSpacing(textState.PdfState),
@@ -771,7 +771,7 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
         textEntries.push_back(PdfTextEntry{ str, pageIndex,
             p_1.X, p_1.Y, strLength, bbox,
             {1.0, 0.0, 0.0, 1.0, 0.0, 0.0},
-            {1.0, 0.0, 0.0, 1.0, 0.0, 0.0}, textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
+            textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
             textState.PdfState.FontScale, textState.PdfState.CharSpacing, textState.PdfState.WordSpacing,
             textState.PdfState.Font->GetStringLength(str, textState.PdfState),
             textState.PdfState.Font->GetLineSpacing(textState.PdfState),
@@ -782,7 +782,6 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
             }});
     }
     textState.T_rm.ToArray(textEntries.back().TextMatrix);
-    textState.T_m.ToArray(textEntries.back().LocalTextMatrix);
 
     chunks.clear();
 }
