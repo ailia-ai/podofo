@@ -754,7 +754,7 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
         textEntries.push_back(PdfTextEntry{ str, pageIndex,
             strPosition.X, strPosition.Y, strLength, bbox,
             {1.0, 0.0, 0.0, 1.0, 0.0, 0.0},
-            {1.0, 0.0, 0.0, 1.0, 0.0, 0.0}, textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
+            textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
             textState.PdfState.FontScale, textState.PdfState.CharSpacing, textState.PdfState.WordSpacing,
             textState.PdfState.Font->GetStringLength(str, textState.PdfState),
             textState.PdfState.Font->GetLineSpacing(textState.PdfState),
@@ -771,7 +771,7 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
         textEntries.push_back(PdfTextEntry{ str, pageIndex,
             p_1.X, p_1.Y, strLength, bbox,
             {1.0, 0.0, 0.0, 1.0, 0.0, 0.0},
-            {1.0, 0.0, 0.0, 1.0, 0.0, 0.0}, textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
+            textState.PdfState.FontSize, textState.PdfState.Font->GetName(),
             textState.PdfState.FontScale, textState.PdfState.CharSpacing, textState.PdfState.WordSpacing,
             textState.PdfState.Font->GetStringLength(str, textState.PdfState),
             textState.PdfState.Font->GetLineSpacing(textState.PdfState),
@@ -782,7 +782,6 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
             }});
     }
     textState.T_rm.ToArray(textEntries.back().TextMatrix);
-    textState.T_m.ToArray(textEntries.back().LocalTextMatrix);
 
     chunks.clear();
 }
@@ -1403,13 +1402,17 @@ double computeLength(const vector<const StatefulString*>& strings, const vector<
     PODOFO_ASSERT(lowerIndex <= upperIndex);
     auto& fromAddr = glyphAddresses[lowerIndex];
     auto& toAddr = glyphAddresses[upperIndex];
+    // Both paths return T_rm-space lengths.
+    // Position is T_rm-space (T_rm.GetTranslationVector()), and glyph advances
+    // are transformed from RawLengths by T_rm so that all arithmetic stays in
+    // the same coordinate space.
     if (fromAddr.StringIndex == toAddr.StringIndex)
     {
         // NOTE: Include the last glyph
         auto str = strings[fromAddr.StringIndex];
         double length = 0;
         for (unsigned i = 0; i <= toAddr.GlyphIndex; i++)
-            length += str->Lengths[i];
+            length += (Vector2(str->RawLengths[i], 0) * str->State.T_rm.GetScalingRotation()).GetLength();
 
         return length;
     }
@@ -1421,12 +1424,14 @@ double computeLength(const vector<const StatefulString*>& strings, const vector<
         // Advance the position before the first glyph
         auto fromPosition = fromStr->Position;
         for (unsigned i = 0; i < fromAddr.GlyphIndex; i++)
-            fromPosition += Vector2(fromStr->Lengths[i], 0);
+            fromPosition += Vector2(
+                (Vector2(fromStr->RawLengths[i], 0) * fromStr->State.T_rm.GetScalingRotation()).GetLength(), 0);
 
         // NOTE: Include the last glyph
         auto toPosition = toStr->Position;
         for (unsigned i = 0; i <= toAddr.GlyphIndex; i++)
-            toPosition += Vector2(toStr->Lengths[i], 0);
+            toPosition += Vector2(
+                (Vector2(toStr->RawLengths[i], 0) * toStr->State.T_rm.GetScalingRotation()).GetLength(), 0);
 
         return (fromPosition - toPosition).GetLength();
     }
