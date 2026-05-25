@@ -1403,13 +1403,17 @@ double computeLength(const vector<const StatefulString*>& strings, const vector<
     PODOFO_ASSERT(lowerIndex <= upperIndex);
     auto& fromAddr = glyphAddresses[lowerIndex];
     auto& toAddr = glyphAddresses[upperIndex];
+    // Both paths return T_rm-space lengths.
+    // Position is T_rm-space (T_rm.GetTranslationVector()), and glyph advances
+    // are transformed from RawLengths by T_rm so that all arithmetic stays in
+    // the same coordinate space.
     if (fromAddr.StringIndex == toAddr.StringIndex)
     {
         // NOTE: Include the last glyph
         auto str = strings[fromAddr.StringIndex];
         double length = 0;
         for (unsigned i = 0; i <= toAddr.GlyphIndex; i++)
-            length += str->Lengths[i];
+            length += (Vector2(str->RawLengths[i], 0) * str->State.T_rm.GetScalingRotation()).GetLength();
 
         return length;
     }
@@ -1421,12 +1425,14 @@ double computeLength(const vector<const StatefulString*>& strings, const vector<
         // Advance the position before the first glyph
         auto fromPosition = fromStr->Position;
         for (unsigned i = 0; i < fromAddr.GlyphIndex; i++)
-            fromPosition += Vector2(fromStr->Lengths[i], 0);
+            fromPosition += Vector2(
+                (Vector2(fromStr->RawLengths[i], 0) * fromStr->State.T_rm.GetScalingRotation()).GetLength(), 0);
 
         // NOTE: Include the last glyph
         auto toPosition = toStr->Position;
         for (unsigned i = 0; i <= toAddr.GlyphIndex; i++)
-            toPosition += Vector2(toStr->Lengths[i], 0);
+            toPosition += Vector2(
+                (Vector2(toStr->RawLengths[i], 0) * toStr->State.T_rm.GetScalingRotation()).GetLength(), 0);
 
         return (fromPosition - toPosition).GetLength();
     }
