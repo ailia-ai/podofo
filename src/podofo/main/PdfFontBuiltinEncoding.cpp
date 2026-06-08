@@ -82,19 +82,22 @@ PdfEncodingMapConstPtr PdfFontMetrics::getFontType1Encoding(FT_Face face)
             if (found == unicodeMap.end())
             {
                 // Some symbol characters may have no unicode representation
-                codeMap.PushMapping(PdfCharCode((unsigned)pair.second), U'\0');
+                // Use CodeSpaceSize=1 because Type1 fonts always use 1-byte character codes
+                codeMap.PushMapping(PdfCharCode((unsigned)pair.second, 1), U'\0');
                 continue;
             }
 
-            codeMap.PushMapping(PdfCharCode((unsigned)pair.second), (char32_t)found->second);
+            // Use CodeSpaceSize=1 because Type1 fonts always use 1-byte character codes
+            codeMap.PushMapping(PdfCharCode((unsigned)pair.second, 1), (char32_t)found->second);
         }
     }
     else
     {
         // NOTE: Some very strange CCF fonts just supply an unicode map
         // For these, we just assume code identity with Unicode codepoint
+        // Use CodeSpaceSize=1 because Type1 fonts always use 1-byte character codes
         for (auto& pair : unicodeMap)
-            codeMap.PushMapping(PdfCharCode((unsigned)pair.second), (char32_t)pair.second);
+            codeMap.PushMapping(PdfCharCode((unsigned)pair.second, 1), (char32_t)pair.second);
     }
 
     return PdfEncodingMapConstPtr(new PdfFontBuiltinType1Encoding(std::move(codeMap)));
