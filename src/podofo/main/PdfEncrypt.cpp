@@ -10,6 +10,8 @@
 #include <podofo/auxiliary/AES.h>
 #include <podofo/auxiliary/SHA.h>
 
+#include <type_traits>
+
 #include <boost/uuid/detail/md5.hpp>
 #include <boost/algorithm/hex.hpp>
 using boost::uuids::detail::md5;
@@ -32,12 +34,26 @@ PdfEncryptAlgorithm::AESV3R6;
 #define AES_IV_LENGTH 16
 #define AES_BLOCK_SIZE 16
 
-static void MD5Final(unsigned char * dst, unsigned char *src){
-    for (int i = 0; i < MD5_DIGEST_LENGTH; i+=4){
-        dst[i + 0] = src [i + 3];
-        dst[i + 1] = src [i + 2];
-        dst[i + 2] = src [i + 1];
-        dst[i + 3] = src [i + 0];
+// Copy the digest produced by boost::uuids::detail::md5 to its standard byte
+// sequence. NOTE: Up to Boost 1.85 md5::digest_type is an array of 4 words, each
+// one holding 4 bytes of the digest in host byte order, so on a little endian
+// host the bytes of every word have to be reversed. Boost 1.86 changed it to the
+// array of the 16 bytes of the digest, which is used as it is: byte swapping it
+// would corrupt every digest, and with it the encryption keys computed from it
+static void MD5Final(unsigned char * dst, const md5::digest_type &src){
+    if constexpr (std::is_same<std::remove_extent<md5::digest_type>::type, unsigned char>::value)
+    {
+        std::memcpy(dst, src, MD5_DIGEST_LENGTH);
+    }
+    else
+    {
+        auto bytes = reinterpret_cast<const unsigned char *>(src);
+        for (int i = 0; i < MD5_DIGEST_LENGTH; i+=4){
+            dst[i + 0] = bytes[i + 3];
+            dst[i + 1] = bytes[i + 2];
+            dst[i + 2] = bytes[i + 1];
+            dst[i + 3] = bytes[i + 0];
+        }
     }
 }
 
@@ -939,7 +955,7 @@ void PoDoFo::PdfEncryptMD5Base::GetMD5Binary(const unsigned char *data, unsigned
     md5::digest_type digest2;
     hash.process_bytes(data, length);
     hash.get_digest(digest2);
-    MD5Final(digest, (unsigned char*)digest2);
+    MD5Final(digest, digest2);
 }
 
 bool PoDoFo::PdfEncryptMD5Base::Authenticate(const std::string_view &documentID, const std::string_view &password, const bufferview &uValue, const bufferview &oValue, PdfPermissions pValue, int lengthValue, int rValue)
@@ -982,7 +998,7 @@ void PoDoFo::PdfEncryptMD5Base::ComputeOwnerKey(const unsigned char userPad[32],
 
     hash.process_bytes(ownerPad, 32);
     hash.get_digest(digest2);
-    MD5Final(digest, (unsigned char*)digest2);
+    MD5Final(digest, digest2);
 
     if ((revision == 3) || (revision == 4))
     {
@@ -1006,7 +1022,7 @@ void PoDoFo::PdfEncryptMD5Base::ComputeOwnerKey(const unsigned char userPad[32],
             md5 hash2;
             hash2.process_bytes(ownerPad, 32);
             hash2.get_digest(digest2);
-            MD5Final(digest, (unsigned char*)digest2);
+            MD5Final(digest, digest2);
         }
         std::memcpy(ownerKey, userPad, 32);
         for (unsigned i = 0; i < 20; ++i)
@@ -1120,7 +1136,7 @@ void PoDoFo::PdfEncryptMD5Base::ComputeEncryptionKey(const std::string_view &doc
     //if (rc != 1)
     //    PODOFO_RAISE_ERROR_INFO(PdfErrorCode::InternalLogic, "Error MD5-hashing data");
     hash.get_digest(digest2);
-    MD5Final(digest, (unsigned char*)digest2);
+    MD5Final(digest, digest2);
 
     // only use the really needed bits as input for the hash
     if (revision == 3 || revision == 4)
@@ -1143,7 +1159,7 @@ void PoDoFo::PdfEncryptMD5Base::ComputeEncryptionKey(const std::string_view &doc
             md5 hash2;
             hash2.process_bytes(digest, m_keyLength);
             hash2.get_digest(digest2);
-            MD5Final(digest, (unsigned char*)digest2);
+            MD5Final(digest, digest2);
         }
     }
 
@@ -1178,7 +1194,7 @@ void PoDoFo::PdfEncryptMD5Base::ComputeEncryptionKey(const std::string_view &doc
         //    PODOFO_RAISE_ERROR_INFO(PdfErrorCode::InternalLogic, "Error MD5-hashing data");
 
         hash3.get_digest(digest2);
-        MD5Final(digest, (unsigned char*)digest2);
+        MD5Final(digest, digest2);
 
         std::memcpy(userKey, digest, 16);
         for (k = 16; k < 32; k++)
