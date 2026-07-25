@@ -51,10 +51,13 @@ PdfEncoding::PdfEncoding(const PdfObject& fontObj, const PdfEncodingMapConstPtr&
     if (lastCharObj != nullptr)
         m_ParsedLimits.LastChar = PdfCharCode(static_cast<unsigned>(lastCharObj->GetNumber()));
 
-    if (m_ParsedLimits.LastChar.Code > m_ParsedLimits.FirstChar.Code)
+    if (m_ParsedLimits.LastChar.Code >= m_ParsedLimits.FirstChar.Code)
     {
         // If found valid /FirstChar and /LastChar, valorize
-        //  also the code size limits
+        //  also the code size limits. NOTE: /FirstChar and /LastChar are equal in
+        //  fonts that define a single character, as it happens with the subsetted
+        //  math fonts embedded by (La)TeX. Such limits are valid as well and are
+        //  needed to map the character code to its /Widths entry
         m_ParsedLimits.MinCodeSize = utls::GetCharCodeSize(m_ParsedLimits.FirstChar.Code);
         m_ParsedLimits.MaxCodeSize = utls::GetCharCodeSize(m_ParsedLimits.LastChar.Code);
     }
@@ -711,7 +714,19 @@ bool PdfStringScanContext::TryScan(PdfCID& cid, string& utf8str, vector<codepoin
         success = false;
     }
 
-    if (m_toUnicode->TryGetCodePoints(cid.Unit, codepoints))
+    bool mapped = m_toUnicode->TryGetCodePoints(cid.Unit, codepoints);
+    if (!mapped && m_toUnicode != m_encoding
+        && m_encoding->GetType() == PdfEncodingMapType::Simple)
+    {
+        // A /ToUnicode CMap may be incomplete: for example the math fonts embedded
+        // by (La)TeX map only a few of the codes they actually use, leaving the big
+        // operators (such as the summation sign of a displayed formula) unmapped.
+        // For simple, one byte encodings the main /Encoding entry maps codes to
+        // glyph names, so it is a valid fallback to recover the missing code points
+        mapped = m_encoding->TryGetCodePoints(cid.Unit, codepoints);
+    }
+
+    if (mapped)
     {
         for (size_t i = 0; i < codepoints.size(); i++)
         {
