@@ -48,6 +48,10 @@ struct TextState
     PdfTextState PdfState;
     Vector2 WordSpacingVectorRaw;
     double WordSpacingLength = 0;
+    // Canvas and index of the text showing operator the strings pushed with this
+    // state come from. See PdfTextEntry::Source
+    unsigned SourceCanvas = 0;
+    unsigned SourceOperator = 0;
     void ComputeDependentState();
     void ComputeSpaceLength();
     void ComputeT_rm();
@@ -121,6 +125,11 @@ public:
     void PushString(const StatefulString &str, bool pushchunk = false);
     void TryPushChunk();
     void TryAddLastEntry();
+    /** Assign the canvas and the index of the text showing operator being read
+     * to the current state, so that the strings it pushes can be traced back to
+     * it. Operators are counted separately for every canvas
+     */
+    void BeginShowText();
 private:
     bool areChunksSpaced(double& distance);
     void pushChunk();
@@ -144,6 +153,11 @@ public:
     double CurrentEntryT_rm_y = NaN;    // Tracks line changing
     Vector2 PrevChunkT_rm_Pos;          // Tracks space separation
     bool BlockOpen = false;
+    // Count of the text showing operators read so far, one counter per nested
+    // canvas: the first one is the content of the page, the following ones are
+    // the form XObjects being drawn. NOTE: The counters can't be kept in the
+    // text state, as it is pushed and popped by the q/Q operators as well
+    std::vector<unsigned> ShowTextCount{ 0 };
 };
 
 struct GlyphAddress
@@ -172,6 +186,8 @@ static void processChunks(const StringChunkList& chunks, string& destString,
 static double computeLength(const vector<const StatefulString*>& strings, const vector<GlyphAddress>& glyphAddresses,
     unsigned lowerIndex, unsigned upperIndex);
 static double computeStringLength(const vector<const StatefulString*>& strings,
+    const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex);
+static PdfTextEntry::PdfTextSource computeSource(const vector<const StatefulString*>& strings,
     const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex);
 static bool isMatchWholeWordSubstring(const string_view& str, const string_view& pattern, size_t& matchPos);
 static Rect computeBoundingBox(const TextState& textState, double boxWidth);
@@ -295,6 +311,7 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                     {
                         ASSERT(context.BlockOpen, "No text block open");
 
+                        context.BeginShowText();
                         auto& str = content.Stack[0].GetString();
                         if (content.Operator == PdfOperator::DoubleQuote)
                         {
@@ -323,6 +340,7 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                     {
                         ASSERT(context.BlockOpen, "No text block open");
 
+                        context.BeginShowText();
                         auto& array = content.Stack[0].GetArray();
                         for (unsigned i = 0; i < array.GetSize(); i++)
                         {
@@ -504,6 +522,7 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                         context.States.GetSize()
                     });
                     context.States.Push();
+                    context.ShowTextCount.push_back(0);
                 }
 
                 // for Image Object
@@ -522,6 +541,8 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                 PODOFO_ASSERT(context.XObjectStateIndices.size() != 0);
                 context.States.Pop(context.States.GetSize() - context.XObjectStateIndices.back().TextStateIndex);
                 context.XObjectStateIndices.pop_back();
+                if (context.ShowTextCount.size() > 1)
+                    context.ShowTextCount.pop_back();
                 break;
             }
             case PdfContentType::Unknown:
@@ -746,6 +767,7 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
 
     double strLength = computeLength(strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
     double stringLength = computeStringLength(strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
+    auto source = computeSource(strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
     nullable<Rect> bbox;
     if (options.ComputeBoundingBox)
         bbox = computeBoundingBox(textState, strLength);
@@ -765,7 +787,8 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
                 {textState.PdfState.TextColor.GrayColor.Gray},
                 {textState.PdfState.TextColor.RGBColor.R, textState.PdfState.TextColor.RGBColor.G, textState.PdfState.TextColor.RGBColor.B},
                 {textState.PdfState.TextColor.CMYKColor.C, textState.PdfState.TextColor.CMYKColor.M, textState.PdfState.TextColor.CMYKColor.Y, textState.PdfState.TextColor.CMYKColor.K}
-            }});
+            },
+            source});
     }
     else
     {
@@ -782,7 +805,8 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
                 {textState.PdfState.TextColor.GrayColor.Gray},
                 {textState.PdfState.TextColor.RGBColor.R, textState.PdfState.TextColor.RGBColor.G, textState.PdfState.TextColor.RGBColor.B},
                 {textState.PdfState.TextColor.CMYKColor.C, textState.PdfState.TextColor.CMYKColor.M, textState.PdfState.TextColor.CMYKColor.Y, textState.PdfState.TextColor.CMYKColor.K}
-            }});
+            },
+            source});
     }
     textState.T_rm.ToArray(textEntries.back().TextMatrix);
 
@@ -1010,6 +1034,15 @@ void ExtractionContext::EndText()
     States.Current->T_lm = Matrix();
     States.Current->ComputeDependentState();
     BlockOpen = false;
+}
+
+void ExtractionContext::BeginShowText()
+{
+    States.Current->SourceCanvas = XObjectStateIndices.size() == 0
+        ? 0u
+        : XObjectStateIndices.back().Form->GetObject().GetIndirectReference().ObjectNumber();
+    States.Current->SourceOperator = ShowTextCount.back();
+    ShowTextCount.back()++;
 }
 
 void ExtractionContext::Tf_Operator(const PdfName &fontname, double fontsize)
@@ -1476,6 +1509,40 @@ double computeStringLength(const vector<const StatefulString*>& strings,
     }
 
     return length;
+}
+
+// Determine the range of the text showing operators the glyphs in the given
+// range were drawn by. See PdfTextEntry::Source
+PdfTextEntry::PdfTextSource computeSource(const vector<const StatefulString*>& strings,
+    const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex)
+{
+    PODOFO_ASSERT(lowerIndex <= upperIndex);
+    auto& fromAddr = glyphAddresses[lowerIndex];
+    auto& toAddr = glyphAddresses[upperIndex];
+    PdfTextEntry::PdfTextSource source;
+    source.Canvas = strings[fromAddr.StringIndex]->State.SourceCanvas;
+    source.FirstOperator = strings[fromAddr.StringIndex]->State.SourceOperator;
+    source.LastOperator = source.FirstOperator;
+    source.IsValid = true;
+    for (unsigned i = fromAddr.StringIndex + 1; i <= toAddr.StringIndex; i++)
+    {
+        auto& state = strings[i]->State;
+        if (state.SourceCanvas != source.Canvas)
+        {
+            // The entry spans several canvases: there's no single range of
+            // operators that identifies it
+            source.IsValid = false;
+            return source;
+        }
+
+        if (state.SourceOperator < source.FirstOperator)
+            source.FirstOperator = state.SourceOperator;
+
+        if (state.SourceOperator > source.LastOperator)
+            source.LastOperator = state.SourceOperator;
+    }
+
+    return source;
 }
 
 // Verify if the string matches the pattern and verify

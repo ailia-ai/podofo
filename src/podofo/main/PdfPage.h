@@ -61,6 +61,20 @@ struct PdfTextEntry final
             double K = -1;
         } CMYKColor;
     } TextColor;
+    // Identifies the text showing operators (Tj, TJ, ' and ") the entry was
+    // extracted from, so that they can be located in the content stream, eg. to
+    // remove the text of single entries. Operators are numbered from zero in
+    // stream order, separately for every canvas: SourceCanvas is the object
+    // number of the form XObject the operators belong to, or zero for the
+    // content of the page itself. SourceOperatorsValid is false when the entry
+    // spans more than one canvas, in which case the range is meaningless
+    struct PdfTextSource
+    {
+        unsigned Canvas = 0;
+        unsigned FirstOperator = 0;
+        unsigned LastOperator = 0;
+        bool IsValid = false;
+    } Source;
 };
 
 struct PdfTextExtractParams
