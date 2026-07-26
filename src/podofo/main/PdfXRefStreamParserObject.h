@@ -27,7 +27,10 @@ class PODOFO_API PdfXRefStreamParserObject final : public PdfParserObject
     friend class PdfParser;
 
     static constexpr unsigned W_ARRAY_SIZE = 3;
-    static constexpr unsigned W_MAX_BYTES = 4;
+    // The fields of an entry are read into an uint64_t, hence 8 bytes is the
+    // widest field that can be represented. NOTE: The PDF specification doesn't
+    // limit the widths, and writers do emit fields wider than 4 bytes
+    static constexpr unsigned W_MAX_BYTES = 8;
 
 private:
     /** Parse the object data from the given file handle starting at
