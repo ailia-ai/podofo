@@ -967,7 +967,7 @@ StatefulString StatefulString::GetTrimmedEnd() const
         }
     }
     return StatefulString(std::move(trimmedStr), State,
-        { Lengths.begin(), Lengths.begin() + positionIndexLimit },
+        { RawLengths.begin(), RawLengths.begin() + positionIndexLimit },
         { StringPositions.begin(), StringPositions.begin() + positionIndexLimit });
 }
 
@@ -1289,7 +1289,7 @@ void splitStringBySpaces(vector<StatefulString> &separatedStrings, const Statefu
             positions[i] -= lowerPos;
 
         separatedStrings.push_back(StatefulString(std::move(separatedStr), state,
-            { str.Lengths.begin() + lowerPosIndex, str.Lengths.begin() + upperPosLimIndex },
+            { str.RawLengths.begin() + lowerPosIndex, str.RawLengths.begin() + upperPosLimIndex },
             std::move(positions)));
         lowerPos = previousPos;
         upperPosLim = (unsigned)str.String.length();
