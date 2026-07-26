@@ -181,6 +181,14 @@ public:
     bool TryScanEncodedString(const PdfString& encodedStr, const PdfTextState& state, std::string& utf8str,
         std::vector<double>& lengths, std::vector<unsigned>& positions) const;
 
+    /** Scan the string also returning the offset of every glyph in the encoded
+     * string, which is needed to rewrite part of it
+     * \param encodedOffsets offset of the code unit of every glyph in the encoded string
+     */
+    bool TryScanEncodedString(const PdfString& encodedStr, const PdfTextState& state, std::string& utf8str,
+        std::vector<double>& lengths, std::vector<unsigned>& positions,
+        std::vector<unsigned>& encodedOffsets) const;
+
     /**
      *  \returns The spacing width
      */

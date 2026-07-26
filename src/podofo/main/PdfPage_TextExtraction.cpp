@@ -10,6 +10,9 @@
 #include <regex>
 #include <deque>
 #include <stack>
+#include <map>
+#include <set>
+#include <algorithm>
 
 #include <utf8cpp/utf8.h>
 
@@ -48,17 +51,26 @@ struct TextState
     PdfTextState PdfState;
     Vector2 WordSpacingVectorRaw;
     double WordSpacingLength = 0;
+    // Canvas and index of the text showing operator the strings pushed with this
+    // state come from. See PdfTextEntry::Source
+    unsigned SourceCanvas = 0;
+    unsigned SourceOperator = 0;
+    // Index of the string inside the text showing operator: it is zero for Tj, '
+    // and ", and the index of the array element for TJ
+    unsigned SourceStringIndex = 0;
     void ComputeDependentState();
     void ComputeSpaceLength();
     void ComputeT_rm();
     double GetWordSpacingLength() const;
-    void ScanString(const PdfString& encodedStr, string& decoded, vector<double>& lengths, vector<unsigned>& positions);
+    void ScanString(const PdfString& encodedStr, string& decoded, vector<double>& lengths, vector<unsigned>& positions,
+        vector<unsigned>& encodedOffsets);
 };
 
 class StatefulString
 {
 public:
-    StatefulString(string&& str, const TextState& state, vector<double>&& rawLengths, vector<unsigned>&& positions);
+    StatefulString(string&& str, const TextState& state, vector<double>&& rawLengths, vector<unsigned>&& positions,
+        vector<unsigned>&& encodedOffsets = { }, const string_view& encodedString = { });
 public:
     bool BeginsWithWhiteSpace() const;
     bool EndsWithWhiteSpace() const;
@@ -75,6 +87,14 @@ public:
     const vector<double> Lengths;
     // Glyph position in the string
     const vector<unsigned> StringPositions;
+    // Offset of the code unit of every glyph in the encoded string, and size of
+    // the encoded string. They locate the glyphs in the content stream, so that
+    // part of a text showing operator can be rewritten
+    const vector<unsigned> EncodedOffsets;
+    const unsigned EncodedSize;
+    // The encoded string the glyphs were decoded from, needed to determine the
+    // code units of the glyphs when rewriting the operator
+    const string EncodedString;
     const Vector2 Position;
     const bool IsWhiteSpace;
 };
@@ -121,6 +141,11 @@ public:
     void PushString(const StatefulString &str, bool pushchunk = false);
     void TryPushChunk();
     void TryAddLastEntry();
+    /** Assign the canvas and the index of the text showing operator being read
+     * to the current state, so that the strings it pushes can be traced back to
+     * it. Operators are counted separately for every canvas
+     */
+    void BeginShowText(PdfOperator op, const PdfVariantStack& operands);
 private:
     bool areChunksSpaced(double& distance);
     void pushChunk();
@@ -144,6 +169,13 @@ public:
     double CurrentEntryT_rm_y = NaN;    // Tracks line changing
     Vector2 PrevChunkT_rm_Pos;          // Tracks space separation
     bool BlockOpen = false;
+    // Count of the text showing operators read so far, one counter per nested
+    // canvas: the first one is the content of the page, the following ones are
+    // the form XObjects being drawn. NOTE: The counters can't be kept in the
+    // text state, as it is pushed and popped by the q/Q operators as well
+    std::vector<unsigned> ShowTextCount{ 0 };
+    // When not null, the details needed to rewrite the text showing operators
+    PdfTextExtractCollector* Collector = nullptr;
 };
 
 struct GlyphAddress
@@ -152,8 +184,56 @@ struct GlyphAddress
     unsigned GlyphIndex;
 };
 
+// An element of the operand of a text showing operator: a string to show or, in
+// the array of TJ, an adjustment of the position
+struct ShowTextElement
+{
+    bool IsString = false;
+    std::string String;     // The encoded string, as it is in the content stream
+    double Number = 0;
+    // Index of the element in the operand of TJ, zero for the other operators
+    unsigned ArrayIndex = 0;
+};
+
+// A text showing operator, as read from the content stream
+struct ShowTextOperator
+{
+    unsigned Canvas = 0;
+    unsigned Index = 0;
+    PdfOperator Op = PdfOperator::Unknown;
+    std::vector<ShowTextElement> Elements;
+    double WordSpacing = 0;     // Operand a_w of "
+    double CharSpacing = 0;     // Operand a_c of "
+};
+
+// The glyphs of a text entry that were drawn by one string of a text showing
+// operator, identified by their code unit range in the encoded string
+struct EntryRun
+{
+    unsigned Canvas = 0;
+    unsigned Operator = 0;
+    unsigned StringIndex = 0;
+    unsigned Begin = 0;
+    unsigned End = 0;
+    // Sum of the raw lengths of the glyphs, that is (w0 * Tfs + Tc) * Th
+    double RawLength = 0;
+    // Count of the glyphs the word spacing applies to, that is the ones encoded
+    // by the single byte 32
+    unsigned WordSpacingCount = 0;
+    double FontSize = 0;
+    double FontScale = 1;
+    double WordSpacing = 0;
+};
+
+struct PoDoFo::PdfTextExtractCollector
+{
+    std::vector<ShowTextOperator> Operators;
+    // The runs of every entry, in the same order the entries are returned with
+    std::vector<std::vector<EntryRun>> EntryRuns;
+};
+
 static bool decodeString(const PdfString &str, TextState &state, string &decoded,
-    vector<double> &lengths, vector<unsigned>& positions);
+    vector<double> &lengths, vector<unsigned>& positions, vector<unsigned>& encodedOffsets);
 static bool areEqual(double lhs, double rhs);
 static bool isWhiteSpaceChunk(const StringChunk &chunk);
 static void splitChunkBySpaces(vector<StringChunkPtr> &splittedChunks, const StringChunk &chunk);
@@ -162,16 +242,21 @@ static void trimSpacesBegin(StringChunk &chunk);
 static void trimSpacesEnd(StringChunk &chunk);
 static void addEntry(vector<PdfTextEntry> &textEntries, StringChunkList &strings,
     const string_view &pattern, const EntryOptions &options, const nullable<Rect> &clipRect,
-    int pageIndex, const Matrix* rotation);
+    int pageIndex, const Matrix* rotation, PdfTextExtractCollector* collector);
 static void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &strings,
     const string_view &pattern, const EntryOptions& options, const nullable<Rect> &clipRect,
-    int pageIndex, const Matrix* rotation);
+    int pageIndex, const Matrix* rotation, PdfTextExtractCollector* collector);
 static void processChunks(const StringChunkList& chunks, string& destString,
     vector<unsigned>& positions, vector<const StatefulString*>& strings,
     vector<GlyphAddress>& glyphAddresses);
 static double computeLength(const vector<const StatefulString*>& strings, const vector<GlyphAddress>& glyphAddresses,
     unsigned lowerIndex, unsigned upperIndex);
 static double computeStringLength(const vector<const StatefulString*>& strings,
+    const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex);
+static vector<unsigned> sliceEncodedOffsets(const vector<unsigned>& offsets, unsigned lowerIndex, unsigned upperIndexLimit);
+static void computeRuns(vector<EntryRun>& runs, const vector<const StatefulString*>& strings,
+    const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex);
+static PdfTextEntry::PdfTextSource computeSource(const vector<const StatefulString*>& strings,
     const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex);
 static bool isMatchWholeWordSubstring(const string_view& str, const string_view& pattern, size_t& matchPos);
 static Rect computeBoundingBox(const TextState& textState, double boxWidth);
@@ -181,6 +266,247 @@ static void getSubstringIndices(const vector<unsigned>& positions, unsigned lowe
     unsigned& lowerIndex, unsigned& upperLimitIndex);
 static EntryOptions optionsFromFlags(PdfTextExtractFlags flags);
 
+// The code units of a string of a text showing operator to remove, with the
+// information needed to preserve the advance of the glyphs they encode
+struct RemovedRange
+{
+    unsigned Begin = 0;
+    unsigned End = 0;
+    double RawLength = 0;
+    unsigned WordSpacingCount = 0;
+    double FontSize = 0;
+    double FontScale = 1;
+    double WordSpacing = 0;
+};
+
+// The adjustment to write in the array of TJ to advance the position as the
+// removed glyphs would have. The advance of a glyph is
+//     ((w0 - a / 1000) * Tfs + Tc + Tw) * Th
+// and the raw length collected during the extraction is (w0 * Tfs + Tc) * Th, so
+// the adjustment that replaces the glyphs of the range is
+//     a = -1000 * (RawLength / (Th * Tfs) + Tw * spaces / Tfs)
+static double computeAdjustment(const RemovedRange& range)
+{
+    if (std::abs(range.FontSize) < 1e-8 || std::abs(range.FontScale) < 1e-8)
+    {
+        // The glyphs have no horizontal advance to preserve
+        return 0;
+    }
+
+    double advance = range.RawLength / (range.FontScale * range.FontSize)
+        + range.WordSpacing * range.WordSpacingCount / range.FontSize;
+
+    return -1000 * advance;
+}
+
+static void appendHexString(string& str, const string_view& encoded)
+{
+    static constexpr char digits[] = "0123456789ABCDEF";
+    str.push_back('<');
+    for (unsigned char c : encoded)
+    {
+        str.push_back(digits[c >> 4]);
+        str.push_back(digits[c & 0x0F]);
+    }
+
+    str.push_back('>');
+}
+
+static void appendNumber(string& str, double value)
+{
+    string formatted;
+    utls::FormatTo(formatted, value, 4);
+    str.append(formatted);
+}
+
+// Rewrite a text showing operator so that the code units of the given ranges are
+// not shown anymore, preserving the advance they would have produced. Every
+// operator is rewritten as TJ, which is equivalent
+static string buildReplacement(const ShowTextOperator& op, const vector<EntryRun>& runs)
+{
+    // Merge the ranges of every string of the operator
+    map<unsigned, vector<RemovedRange>> ranges;
+    for (auto& run : runs)
+    {
+        auto& stringRanges = ranges[run.StringIndex];
+        RemovedRange range;
+        range.Begin = run.Begin;
+        range.End = run.End;
+        range.RawLength = run.RawLength;
+        range.WordSpacingCount = run.WordSpacingCount;
+        range.FontSize = run.FontSize;
+        range.FontScale = run.FontScale;
+        range.WordSpacing = run.WordSpacing;
+        stringRanges.push_back(range);
+    }
+
+    for (auto& pair : ranges)
+    {
+        auto& stringRanges = pair.second;
+        std::sort(stringRanges.begin(), stringRanges.end(),
+            [](const RemovedRange& lhs, const RemovedRange& rhs) { return lhs.Begin < rhs.Begin; });
+
+        // Merge the ranges that touch each other, so that a single adjustment is
+        // written for them
+        vector<RemovedRange> merged;
+        for (auto& range : stringRanges)
+        {
+            if (merged.size() != 0 && range.Begin <= merged.back().End)
+            {
+                auto& last = merged.back();
+                last.End = std::max(last.End, range.End);
+                last.RawLength += range.RawLength;
+                last.WordSpacingCount += range.WordSpacingCount;
+                continue;
+            }
+
+            merged.push_back(range);
+        }
+
+        stringRanges = std::move(merged);
+    }
+
+    string text;
+    string array = "[";
+    for (auto& element : op.Elements)
+    {
+        if (!element.IsString)
+        {
+            array.push_back(' ');
+            appendNumber(array, element.Number);
+            continue;
+        }
+
+        auto found = ranges.find(element.ArrayIndex);
+        if (found == ranges.end())
+        {
+            // Nothing to remove from this string
+            appendHexString(array, element.String);
+            continue;
+        }
+
+        unsigned position = 0;
+        for (auto& range : found->second)
+        {
+            if (range.Begin > position)
+                appendHexString(array, string_view(element.String).substr(position, range.Begin - position));
+
+            double adjustment = computeAdjustment(range);
+            if (adjustment != 0)
+            {
+                array.push_back(' ');
+                appendNumber(array, adjustment);
+                array.push_back(' ');
+            }
+
+            position = range.End;
+        }
+
+        if (position < element.String.size())
+            appendHexString(array, string_view(element.String).substr(position));
+    }
+
+    array.append("] TJ");
+
+    switch (op.Op)
+    {
+        case PdfOperator::DoubleQuote:
+        {
+            // Operator " sets the spacings and moves to the next line as well
+            appendNumber(text, op.WordSpacing);
+            text.append(" Tw ");
+            appendNumber(text, op.CharSpacing);
+            text.append(" Tc T* ");
+            break;
+        }
+        case PdfOperator::Quote:
+        {
+            // Operator ' moves to the next line as well
+            text.append("T* ");
+            break;
+        }
+        default:
+            break;
+    }
+
+    text.append(array);
+
+    return text;
+}
+
+void PdfPage::ComputeTextRemovalTo(vector<PdfTextReplacement>& replacements,
+    const vector<unsigned>& entryIndices, const PdfTextExtractParams& params) const
+{
+    replacements.clear();
+
+    PdfTextExtractCollector collector;
+    vector<PdfTextEntry> entries;
+    extractTextTo(entries, { }, params, &collector);
+
+    // Group the code units to remove by the operator they belong to
+    map<pair<unsigned, unsigned>, vector<EntryRun>> perOperator;
+    // The operators of the entries that can't be located precisely: they are
+    // removed as a whole, as it was done before the removal became per entry
+    std::set<pair<unsigned, unsigned>> toDrop;
+    for (unsigned index : entryIndices)
+    {
+        if (index >= entries.size() || index >= collector.EntryRuns.size())
+            PODOFO_RAISE_ERROR_INFO(PdfErrorCode::ValueOutOfRange, "The text entry index is out of range");
+
+        auto& runs = collector.EntryRuns[index];
+        if (runs.size() == 0)
+        {
+            auto& source = entries[index].Source;
+            if (!source.IsValid)
+                PODOFO_RAISE_ERROR_INFO(PdfErrorCode::ValueOutOfRange, "The text entry can't be located");
+
+            for (unsigned op = source.FirstOperator; op <= source.LastOperator; op++)
+                toDrop.insert({ source.Canvas, op });
+
+            continue;
+        }
+
+        for (auto& run : runs)
+            perOperator[{ run.Canvas, run.Operator }].push_back(run);
+    }
+
+    for (auto& pair : perOperator)
+    {
+        const ShowTextOperator* op = nullptr;
+        for (auto& candidate : collector.Operators)
+        {
+            if (candidate.Canvas == pair.first.first && candidate.Index == pair.first.second)
+            {
+                op = &candidate;
+                break;
+            }
+        }
+
+        if (op == nullptr)
+            continue;
+
+        PdfTextReplacement replacement;
+        replacement.Canvas = pair.first.first;
+        replacement.Operator = pair.first.second;
+        replacement.Text = buildReplacement(*op, pair.second);
+        replacements.push_back(std::move(replacement));
+    }
+
+    for (auto& dropped : toDrop)
+    {
+        if (perOperator.find(dropped) != perOperator.end())
+        {
+            // The operator is rewritten: don't drop the text that is kept
+            continue;
+        }
+
+        PdfTextReplacement replacement;
+        replacement.Canvas = dropped.first;
+        replacement.Operator = dropped.second;
+        replacements.push_back(std::move(replacement));
+    }
+}
+
 void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const PdfTextExtractParams& params) const
 {
     ExtractTextTo(entries, { }, params);
@@ -189,13 +515,21 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const PdfTextExtractP
 void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pattern,
     const PdfTextExtractParams& params) const
 {
+    extractTextTo(entries, pattern, params, nullptr);
+}
+
+void PdfPage::extractTextTo(vector<PdfTextEntry>& entries, const string_view& pattern,
+    const PdfTextExtractParams& params, PdfTextExtractCollector* collector) const
+{
     ExtractionContext context(entries, *this, pattern, params.Flags, params.ClipRect);
+    context.Collector = collector;
 
     // Look FIGURE 4.1 Graphics objects
     PdfContentStreamReader reader(*this);
     PdfContent content;
     vector<double> lengths;
     vector<unsigned> positions;
+    vector<unsigned> encodedOffsets;
     string decoded;
     while (reader.TryReadNext(content))
     {
@@ -295,6 +629,7 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                     {
                         ASSERT(context.BlockOpen, "No text block open");
 
+                        context.BeginShowText(content.Operator, content.Stack);
                         auto& str = content.Stack[0].GetString();
                         if (content.Operator == PdfOperator::DoubleQuote)
                         {
@@ -303,11 +638,13 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                             context.States.Current->PdfState.WordSpacing = content.Stack[2].GetReal();
                         }
 
-                        if (decodeString(str, *context.States.Current, decoded, lengths, positions)
+                        context.States.Current->SourceStringIndex = 0;
+                        if (decodeString(str, *context.States.Current, decoded, lengths, positions, encodedOffsets)
                             && decoded.length() != 0)
                         {
                             context.PushString(StatefulString(std::move(decoded), *context.States.Current,
-                                std::move(lengths), std::move(positions)), true);
+                                std::move(lengths), std::move(positions), std::move(encodedOffsets),
+                                str.GetRawData()), true);
                         }
 
                         if (content.Operator == PdfOperator::Quote
@@ -323,6 +660,7 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                     {
                         ASSERT(context.BlockOpen, "No text block open");
 
+                        context.BeginShowText(content.Operator, content.Stack);
                         auto& array = content.Stack[0].GetArray();
                         for (unsigned i = 0; i < array.GetSize(); i++)
                         {
@@ -331,11 +669,14 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                             auto& obj = array[i];
                             if (obj.TryGetString(str))
                             {
-                                if (decodeString(*str, *context.States.Current, decoded, lengths, positions)
+                                context.States.Current->SourceStringIndex = i;
+                                if (decodeString(*str, *context.States.Current, decoded, lengths, positions,
+                                        encodedOffsets)
                                     && decoded.length() != 0)
                                 {
                                     context.PushString(StatefulString(std::move(decoded), *context.States.Current,
-                                        std::move(lengths), std::move(positions)));
+                                        std::move(lengths), std::move(positions), std::move(encodedOffsets),
+                                        str->GetRawData()));
                                 }
                             }
                             else if (obj.TryGetReal(real))
@@ -504,6 +845,7 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                         context.States.GetSize()
                     });
                     context.States.Push();
+                    context.ShowTextCount.push_back(0);
                 }
 
                 // for Image Object
@@ -522,6 +864,8 @@ void PdfPage::ExtractTextTo(vector<PdfTextEntry>& entries, const string_view& pa
                 PODOFO_ASSERT(context.XObjectStateIndices.size() != 0);
                 context.States.Pop(context.States.GetSize() - context.XObjectStateIndices.back().TextStateIndex);
                 context.XObjectStateIndices.pop_back();
+                if (context.ShowTextCount.size() > 1)
+                    context.ShowTextCount.pop_back();
                 break;
             }
             case PdfContentType::Unknown:
@@ -544,7 +888,8 @@ void PdfPage::RegisterCallback(GetImageObjectCallback callback)
 }
 
 void addEntry(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, const string_view &pattern,
-    const EntryOptions &options, const nullable<Rect> &clipRect, int pageIndex, const Matrix* rotation)
+    const EntryOptions &options, const nullable<Rect> &clipRect, int pageIndex, const Matrix* rotation,
+    PdfTextExtractCollector* collector)
 {
     if (options.TokenizeWords)
     {
@@ -598,18 +943,19 @@ void addEntry(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, const 
         for (auto& batch : batches)
         {
             addEntryChunk(textEntries, *batch, pattern, options,
-                clipRect, pageIndex, rotation);
+                clipRect, pageIndex, rotation, collector);
         }
     }
     else
     {
         addEntryChunk(textEntries, chunks, pattern, options,
-            clipRect, pageIndex, rotation);
+            clipRect, pageIndex, rotation, collector);
     }
 }
 
 void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, const string_view &pattern,
-    const EntryOptions& options, const nullable<Rect> &clipRect, int pageIndex, const Matrix* rotation)
+    const EntryOptions& options, const nullable<Rect> &clipRect, int pageIndex, const Matrix* rotation,
+    PdfTextExtractCollector* collector)
 {
     if (options.TrimSpaces)
     {
@@ -746,6 +1092,10 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
 
     double strLength = computeLength(strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
     double stringLength = computeStringLength(strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
+    auto source = computeSource(strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
+    vector<EntryRun> runs;
+    if (collector != nullptr)
+        computeRuns(runs, strings, glyphAddresses, lowerIndex, upperIndexLimit - 1);
     nullable<Rect> bbox;
     if (options.ComputeBoundingBox)
         bbox = computeBoundingBox(textState, strLength);
@@ -765,7 +1115,8 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
                 {textState.PdfState.TextColor.GrayColor.Gray},
                 {textState.PdfState.TextColor.RGBColor.R, textState.PdfState.TextColor.RGBColor.G, textState.PdfState.TextColor.RGBColor.B},
                 {textState.PdfState.TextColor.CMYKColor.C, textState.PdfState.TextColor.CMYKColor.M, textState.PdfState.TextColor.CMYKColor.Y, textState.PdfState.TextColor.CMYKColor.K}
-            }});
+            },
+            source});
     }
     else
     {
@@ -782,9 +1133,13 @@ void addEntryChunk(vector<PdfTextEntry> &textEntries, StringChunkList &chunks, c
                 {textState.PdfState.TextColor.GrayColor.Gray},
                 {textState.PdfState.TextColor.RGBColor.R, textState.PdfState.TextColor.RGBColor.G, textState.PdfState.TextColor.RGBColor.B},
                 {textState.PdfState.TextColor.CMYKColor.C, textState.PdfState.TextColor.CMYKColor.M, textState.PdfState.TextColor.CMYKColor.Y, textState.PdfState.TextColor.CMYKColor.K}
-            }});
+            },
+            source});
     }
     textState.T_rm.ToArray(textEntries.back().TextMatrix);
+
+    if (collector != nullptr)
+        collector->EntryRuns.push_back(std::move(runs));
 
     chunks.clear();
 }
@@ -806,7 +1161,7 @@ void read(const PdfVariantStack& tokens, double & a, double & b, double & c, dou
 }
 
 bool decodeString(const PdfString &str, TextState &state, string &decoded,
-    vector<double>& lengths, vector<unsigned>& positions)
+    vector<double>& lengths, vector<unsigned>& positions, vector<unsigned>& encodedOffsets)
 {
     if (state.PdfState.Font == nullptr)
     {
@@ -817,8 +1172,12 @@ bool decodeString(const PdfString &str, TextState &state, string &decoded,
             decoded = str.GetString();
             lengths.resize(decoded.length());
             positions.reserve(decoded.length());
+            encodedOffsets.reserve(decoded.length());
             for (unsigned i = 0; i < decoded.length(); i++)
+            {
                 positions.push_back(i);
+                encodedOffsets.push_back(i);
+            }
 
             return true;
         }
@@ -826,20 +1185,25 @@ bool decodeString(const PdfString &str, TextState &state, string &decoded,
         decoded.clear();
         lengths.clear();
         positions.clear();
+        encodedOffsets.clear();
         return false;
     }
 
-    state.ScanString(str, decoded, lengths, positions);
+    state.ScanString(str, decoded, lengths, positions, encodedOffsets);
     return true;
 }
 
 StatefulString::StatefulString(string&& str, const TextState& state,
-        vector<double>&& lengths, vector<unsigned>&& positions) :
+        vector<double>&& lengths, vector<unsigned>&& positions,
+        vector<unsigned>&& encodedOffsets, const string_view& encodedString) :
     String(std::move(str)),
     State(state),
     RawLengths(std::move(lengths)),
     Lengths(computeLengths(RawLengths)),
     StringPositions(std::move(positions)),
+    EncodedOffsets(std::move(encodedOffsets)),
+    EncodedSize((unsigned)encodedString.size()),
+    EncodedString(encodedString),
     Position(state.T_rm.GetTranslationVector()),
     IsWhiteSpace(utls::IsStringEmptyOrWhiteSpace(String))
 {
@@ -894,7 +1258,9 @@ StatefulString StatefulString::GetTrimmedBegin() const
     // After, rewrite the string without spaces
     return StatefulString(str.substr(trimmedLen), state,
         { RawLengths.begin() + lowerIndex, RawLengths.end() },
-        std::move(positions));
+        std::move(positions),
+        sliceEncodedOffsets(EncodedOffsets, lowerIndex, (unsigned)EncodedOffsets.size()),
+        EncodedString);
 }
 
 bool StatefulString::BeginsWithWhiteSpace() const
@@ -943,8 +1309,9 @@ StatefulString StatefulString::GetTrimmedEnd() const
         }
     }
     return StatefulString(std::move(trimmedStr), State,
-        { Lengths.begin(), Lengths.begin() + positionIndexLimit },
-        { StringPositions.begin(), StringPositions.begin() + positionIndexLimit });
+        { RawLengths.begin(), RawLengths.begin() + positionIndexLimit },
+        { StringPositions.begin(), StringPositions.begin() + positionIndexLimit },
+        sliceEncodedOffsets(EncodedOffsets, 0, positionIndexLimit), EncodedString);
 }
 
 double StatefulString::GetLengthRaw() const
@@ -1010,6 +1377,59 @@ void ExtractionContext::EndText()
     States.Current->T_lm = Matrix();
     States.Current->ComputeDependentState();
     BlockOpen = false;
+}
+
+void ExtractionContext::BeginShowText(PdfOperator op, const PdfVariantStack& operands)
+{
+    States.Current->SourceCanvas = XObjectStateIndices.size() == 0
+        ? 0u
+        : XObjectStateIndices.back().Form->GetObject().GetIndirectReference().ObjectNumber();
+    States.Current->SourceOperator = ShowTextCount.back();
+    States.Current->SourceStringIndex = 0;
+    ShowTextCount.back()++;
+
+    if (Collector == nullptr)
+        return;
+
+    // Remember the operator and its operands, so that it can be rewritten later on
+    ShowTextOperator info;
+    info.Canvas = States.Current->SourceCanvas;
+    info.Index = States.Current->SourceOperator;
+    info.Op = op;
+    switch (op)
+    {
+        case PdfOperator::TJ:
+        {
+            auto& array = operands[0].GetArray();
+            for (unsigned i = 0; i < array.GetSize(); i++)
+            {
+                const PdfString* str;
+                double number;
+                auto& obj = array[i];
+                if (obj.TryGetString(str))
+                    info.Elements.push_back({ true, (string)str->GetRawData(), 0, i });
+                else if (obj.TryGetReal(number))
+                    info.Elements.push_back({ false, { }, number, i });
+            }
+
+            break;
+        }
+        case PdfOperator::DoubleQuote:
+        {
+            // Operator " arguments: aw ac string "
+            info.CharSpacing = operands[1].GetReal();
+            info.WordSpacing = operands[2].GetReal();
+            info.Elements.push_back({ true, (string)operands[0].GetString().GetRawData(), 0 });
+            break;
+        }
+        default:
+        {
+            info.Elements.push_back({ true, (string)operands[0].GetString().GetRawData(), 0 });
+            break;
+        }
+    }
+
+    Collector->Operators.push_back(std::move(info));
 }
 
 void ExtractionContext::Tf_Operator(const PdfName &fontname, double fontsize)
@@ -1136,7 +1556,7 @@ const StatefulString& ExtractionContext::getPreviouString() const
 
 void ExtractionContext::addEntry()
 {
-    ::addEntry(Entries, Chunks, Pattern, Options, ClipRect, PageIndex, Rotation.get());
+    ::addEntry(Entries, Chunks, Pattern, Options, ClipRect, PageIndex, Rotation.get(), Collector);
 }
 
 void ExtractionContext::tryAddEntry(const StatefulString& currStr)
@@ -1256,8 +1676,9 @@ void splitStringBySpaces(vector<StatefulString> &separatedStrings, const Statefu
             positions[i] -= lowerPos;
 
         separatedStrings.push_back(StatefulString(std::move(separatedStr), state,
-            { str.Lengths.begin() + lowerPosIndex, str.Lengths.begin() + upperPosLimIndex },
-            std::move(positions)));
+            { str.RawLengths.begin() + lowerPosIndex, str.RawLengths.begin() + upperPosLimIndex },
+            std::move(positions),
+            sliceEncodedOffsets(str.EncodedOffsets, lowerPosIndex, upperPosLimIndex), str.EncodedString));
         lowerPos = previousPos;
         upperPosLim = (unsigned)str.String.length();
 
@@ -1368,9 +1789,10 @@ double TextState::GetWordSpacingLength() const
     return PdfState.Font->GetWordSpacingLength(PdfState);
 }
 
-void TextState::ScanString(const PdfString& encodedStr, string& decoded, vector<double>& lengths, vector<unsigned>& positions)
+void TextState::ScanString(const PdfString& encodedStr, string& decoded, vector<double>& lengths, vector<unsigned>& positions,
+    vector<unsigned>& encodedOffsets)
 {
-    (void)PdfState.Font->TryScanEncodedString(encodedStr, PdfState, decoded, lengths, positions);
+    (void)PdfState.Font->TryScanEncodedString(encodedStr, PdfState, decoded, lengths, positions, encodedOffsets);
 }
 
 // Concatenate all strings, lengths and string positions
@@ -1476,6 +1898,116 @@ double computeStringLength(const vector<const StatefulString*>& strings,
     }
 
     return length;
+}
+
+// Determine the range of the text showing operators the glyphs in the given
+// range were drawn by. See PdfTextEntry::Source
+PdfTextEntry::PdfTextSource computeSource(const vector<const StatefulString*>& strings,
+    const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex)
+{
+    PODOFO_ASSERT(lowerIndex <= upperIndex);
+    auto& fromAddr = glyphAddresses[lowerIndex];
+    auto& toAddr = glyphAddresses[upperIndex];
+    PdfTextEntry::PdfTextSource source;
+    source.Canvas = strings[fromAddr.StringIndex]->State.SourceCanvas;
+    source.FirstOperator = strings[fromAddr.StringIndex]->State.SourceOperator;
+    source.LastOperator = source.FirstOperator;
+    source.IsValid = true;
+    for (unsigned i = fromAddr.StringIndex + 1; i <= toAddr.StringIndex; i++)
+    {
+        auto& state = strings[i]->State;
+        if (state.SourceCanvas != source.Canvas)
+        {
+            // The entry spans several canvases: there's no single range of
+            // operators that identifies it
+            source.IsValid = false;
+            return source;
+        }
+
+        if (state.SourceOperator < source.FirstOperator)
+            source.FirstOperator = state.SourceOperator;
+
+        if (state.SourceOperator > source.LastOperator)
+            source.LastOperator = state.SourceOperator;
+    }
+
+    return source;
+}
+
+// Keep the offsets of the glyphs of the given range. NOTE: The offsets are not
+// rebased, as they refer to the encoded string, which is not modified
+vector<unsigned> sliceEncodedOffsets(const vector<unsigned>& offsets, unsigned lowerIndex, unsigned upperIndexLimit)
+{
+    if (offsets.size() == 0)
+        return { };
+
+    if (lowerIndex > offsets.size())
+        lowerIndex = (unsigned)offsets.size();
+
+    if (upperIndexLimit > offsets.size())
+        upperIndexLimit = (unsigned)offsets.size();
+
+    if (lowerIndex >= upperIndexLimit)
+        return { };
+
+    return { offsets.begin() + lowerIndex, offsets.begin() + upperIndexLimit };
+}
+
+// Determine the code units the glyphs in the given range were encoded with, one
+// run per string of the text showing operators they belong to
+void computeRuns(vector<EntryRun>& runs, const vector<const StatefulString*>& strings,
+    const vector<GlyphAddress>& glyphAddresses, unsigned lowerIndex, unsigned upperIndex)
+{
+    PODOFO_ASSERT(lowerIndex <= upperIndex);
+    auto& fromAddr = glyphAddresses[lowerIndex];
+    auto& toAddr = glyphAddresses[upperIndex];
+    for (unsigned i = fromAddr.StringIndex; i <= toAddr.StringIndex; i++)
+    {
+        auto str = strings[i];
+        unsigned glyphCount = (unsigned)str->EncodedOffsets.size();
+        if (glyphCount == 0)
+        {
+            // The string was synthesized by the extraction, as it happens with the
+            // spaces that separate two chunks: there's nothing to rewrite for it
+            continue;
+        }
+
+        unsigned firstGlyph = i == fromAddr.StringIndex ? fromAddr.GlyphIndex : 0;
+        unsigned lastGlyph = i == toAddr.StringIndex ? toAddr.GlyphIndex : glyphCount - 1;
+        if (firstGlyph >= glyphCount || lastGlyph >= glyphCount || firstGlyph > lastGlyph)
+        {
+            // The glyphs can't be located: give up rewriting the whole entry, so
+            // that the operators it was drawn by are removed as they were before
+            runs.clear();
+            return;
+        }
+
+        EntryRun run;
+        run.Canvas = str->State.SourceCanvas;
+        run.Operator = str->State.SourceOperator;
+        run.StringIndex = str->State.SourceStringIndex;
+        run.Begin = str->EncodedOffsets[firstGlyph];
+        run.End = lastGlyph + 1 == glyphCount ? str->EncodedSize : str->EncodedOffsets[lastGlyph + 1];
+        run.FontSize = str->State.PdfState.FontSize;
+        run.FontScale = str->State.PdfState.FontScale;
+        run.WordSpacing = str->State.PdfState.WordSpacing;
+        for (unsigned j = firstGlyph; j <= lastGlyph; j++)
+        {
+            if (j < str->RawLengths.size())
+                run.RawLength += str->RawLengths[j];
+
+            // The word spacing applies to the single byte code 32 only
+            unsigned begin = str->EncodedOffsets[j];
+            unsigned end = j + 1 == glyphCount ? str->EncodedSize : str->EncodedOffsets[j + 1];
+            if (end == begin + 1 && begin < str->EncodedString.size()
+                && (unsigned char)str->EncodedString[begin] == 32)
+            {
+                run.WordSpacingCount++;
+            }
+        }
+
+        runs.push_back(run);
+    }
 }
 
 // Verify if the string matches the pattern and verify

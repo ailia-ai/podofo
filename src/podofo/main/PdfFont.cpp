@@ -322,9 +322,17 @@ bool PdfFont::TryGetEncodedStringLength(const PdfString& encodedStr, const PdfTe
 
 bool PdfFont::TryScanEncodedString(const PdfString& encodedStr, const PdfTextState& state, string& utf8str, vector<double>& lengths, vector<unsigned>& positions) const
 {
+    vector<unsigned> encodedOffsets;
+    return TryScanEncodedString(encodedStr, state, utf8str, lengths, positions, encodedOffsets);
+}
+
+bool PdfFont::TryScanEncodedString(const PdfString& encodedStr, const PdfTextState& state, string& utf8str,
+    vector<double>& lengths, vector<unsigned>& positions, vector<unsigned>& encodedOffsets) const
+{
     utf8str.clear();
     lengths.clear();
     positions.clear();
+    encodedOffsets.clear();
 
     if (encodedStr.IsEmpty())
         return true;
@@ -334,6 +342,7 @@ bool PdfFont::TryScanEncodedString(const PdfString& encodedStr, const PdfTextSta
     PdfCID cid;
     bool success = true;
     unsigned prevOffset = 0;
+    unsigned prevEncodedOffset = 0;
     double length;
     while (!context.IsEndOfString())
     {
@@ -343,7 +352,9 @@ bool PdfFont::TryScanEncodedString(const PdfString& encodedStr, const PdfTextSta
         length = getGlyphLength(GetCIDLengthRaw(cid.Id), state, false);
         lengths.push_back(length);
         positions.push_back(prevOffset);
+        encodedOffsets.push_back(prevEncodedOffset);
         prevOffset = (unsigned)utf8str.length();
+        prevEncodedOffset = context.GetOffset();
     }
 
     return success;
