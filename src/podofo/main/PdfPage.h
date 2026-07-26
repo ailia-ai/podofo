@@ -83,6 +83,24 @@ struct PdfTextExtractParams
     PdfTextExtractFlags Flags;
 };
 
+/** The text to replace a text showing operator with, so that the text of single
+ * text entries can be removed from a content stream. See
+ * PdfPage::ComputeTextRemovalTo()
+ */
+struct PdfTextReplacement final
+{
+    // Canvas and index of the operator, as in PdfTextEntry::Source
+    unsigned Canvas = 0;
+    unsigned Operator = 0;
+    // The operators to write in place of the original one. It is empty when the
+    // original operator is to be removed
+    std::string Text;
+};
+
+// Collects the details needed to rewrite the text showing operators. It is an
+// implementation detail of the text extraction
+struct PdfTextExtractCollector;
+
 typedef void (*GetImageObjectCallback)(const PdfObject);
 
 /** PdfPage is one page in the pdf document.
@@ -119,6 +137,22 @@ public:
 
     void ExtractTextTo(std::vector<PdfTextEntry>& entries,
         const std::string_view& pattern = { },
+        const PdfTextExtractParams& params = { }) const;
+
+    /** Determine how to rewrite the content stream to remove the text of the
+     * given entries, leaving the text of all the other entries untouched
+     *
+     * \param replacements the text showing operators to rewrite and the text to
+     *      write in place of them. Operators that don't need to be rewritten are
+     *      not returned
+     * \param entryIndices indices of the entries to remove, as returned by
+     *      ExtractTextTo() with the same parameters
+     * \remarks The text of the entries that are kept is preserved as it is,
+     *      including the state it is drawn with. The advance of the removed
+     *      glyphs is preserved as well, so that the following text doesn't move
+     */
+    void ComputeTextRemovalTo(std::vector<PdfTextReplacement>& replacements,
+        const std::vector<unsigned>& entryIndices,
         const PdfTextExtractParams& params = { }) const;
 
     Rect GetRect() const;
@@ -259,6 +293,10 @@ public:
     inline PdfAnnotationCollection& GetAnnotations() { return m_Annotations; }
     inline const PdfAnnotationCollection& GetAnnotations() const { return m_Annotations; }
     void RegisterCallback(GetImageObjectCallback callback);
+
+private:
+    void extractTextTo(std::vector<PdfTextEntry>& entries, const std::string_view& pattern,
+        const PdfTextExtractParams& params, PdfTextExtractCollector* collector) const;
 
 private:
     // To be called by PdfPageCollection

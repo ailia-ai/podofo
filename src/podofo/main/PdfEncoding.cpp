@@ -691,6 +691,7 @@ size_t PdfEncoding::GetNextId()
 }
 
 PdfStringScanContext::PdfStringScanContext(const string_view& encodedstr, const PdfEncoding& encoding) :
+    m_begin(encodedstr.begin()),
     m_it(encodedstr.begin()),
     m_end(encodedstr.end()),
     m_encoding(&encoding.GetEncodingMap()),
@@ -702,6 +703,11 @@ PdfStringScanContext::PdfStringScanContext(const string_view& encodedstr, const 
 bool PdfStringScanContext::IsEndOfString() const
 {
     return m_it == m_end;
+}
+
+unsigned PdfStringScanContext::GetOffset() const
+{
+    return (unsigned)(m_it - m_begin);
 }
 
 bool PdfStringScanContext::TryScan(PdfCID& cid, string& utf8str, vector<codepoint>& codepoints)

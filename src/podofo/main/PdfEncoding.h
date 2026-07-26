@@ -41,7 +41,14 @@ namespace PoDoFo
          */
         bool TryScan(PdfCID& cid, std::string& utf8str, std::vector<codepoint>& codepoints);
 
+        /** Offset of the code unit that will be read next, from the beginning of
+         * the encoded string. It is the offset of the code unit just read after
+         * a successful TryScan()
+         */
+        unsigned GetOffset() const;
+
     private:
+        std::string_view::iterator m_begin;
         std::string_view::iterator m_it;
         std::string_view::iterator m_end;
         const PdfEncodingMap* m_encoding;
