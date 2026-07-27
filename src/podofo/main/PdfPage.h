@@ -83,6 +83,82 @@ struct PdfTextExtractParams
     PdfTextExtractFlags Flags;
 };
 
+/** The color space a color belongs to
+ */
+enum class PdfPaintColorSpace : uint8_t
+{
+    /** The color is unknown, as it belongs to a color space that is not converted,
+     * a Separation or a Pattern one
+     */
+    None = 0,
+    Gray = 1,
+    RGB = 2,
+    CMYK = 3,
+};
+
+/** The color a path is painted with
+ */
+struct PdfPaintColor final
+{
+    PdfPaintColorSpace ColorSpace = PdfPaintColorSpace::None;
+    /** The components of the color: one for Gray, three for RGB and four for
+     * CMYK. The unused ones are zero. The components of an ICCBased color space
+     * are reported as the device space with the same number of components
+     */
+    double Components[4] = { 0, 0, 0, 0 };
+};
+
+enum class PdfGraphicsEntryType : uint8_t
+{
+    /** A painted path: the rules of a table, the frame of a figure, ... */
+    Path = 0,
+    /** The placement of an image XObject */
+    Image = 1,
+};
+
+/** A drawing of a page, in page coordinates. See PdfPage::ExtractGraphicsTo()
+ */
+struct PdfGraphicsEntry final
+{
+    PdfGraphicsEntryType Type = PdfGraphicsEntryType::Path;
+    int Page = 0;
+    /** Visible bounding box of the drawing, that is its bounding box intersected
+     * with the clipping path in use. NOTE: The bounding box of a curve is the one
+     * of its control points, which contains the curve
+     */
+    double X = 0;
+    double Y = 0;
+    double Width = 0;
+    double Height = 0;
+    /** Endpoints of the segment when the path is a single straight line, before
+     * clipping. They are the lower left and the upper right corners of the
+     * bounding box otherwise
+     */
+    double X1 = 0;
+    double Y1 = 0;
+    double X2 = 0;
+    double Y2 = 0;
+    /** Bounding box of the clipping path in use, which is the box of the page
+     * when there is none
+     */
+    double ClipX = 0;
+    double ClipY = 0;
+    double ClipWidth = 0;
+    double ClipHeight = 0;
+    /** True when the path is a single straight segment, as the rules of a table */
+    bool IsLine = false;
+    /** True when the path is an axis aligned rectangle, as the frame of a figure */
+    bool IsRectangle = false;
+    bool Stroked = false;
+    bool Filled = false;
+    /** Width of the stroke in page units, zero when the path is not stroked */
+    double LineWidth = 0;
+    PdfPaintColor FillColor;
+    PdfPaintColor StrokeColor;
+    /** Object number of the image of an Image entry, zero for a path */
+    unsigned ImageObject = 0;
+};
+
 /** The text to replace a text showing operator with, so that the text of single
  * text entries can be removed from a content stream. See
  * PdfPage::ComputeTextRemovalTo()
@@ -138,6 +214,23 @@ public:
     void ExtractTextTo(std::vector<PdfTextEntry>& entries,
         const std::string_view& pattern = { },
         const PdfTextExtractParams& params = { }) const;
+
+    /** Extract the drawings of the page: the painted paths, that is the rules of
+     * the tables and the frames of the figures, and the placement of the images
+     *
+     * \param entries the drawings, in page coordinates and in drawing order
+     * \param minSize the drawings whose visible bounding box is smaller than this
+     *      value in both directions are not reported. Zero reports all of them
+     * \remarks The paths are reported one subpath at a time, so that the rules
+     *      drawn by a single path are reported separately. The paths that are
+     *      neither stroked nor filled, as the ones that only set the clipping
+     *      path, and the ones the clipping path hides entirely, are not reported
+     * \remarks The coordinates are the ones the text extraction reports: the CTM
+     *      is applied, hence the content of a form XObject is reported with the
+     *      matrix of every placement applied, the origin is the lower left corner
+     *      of the page and the rotation of the page is applied
+     */
+    void ExtractGraphicsTo(std::vector<PdfGraphicsEntry>& entries, double minSize = 0) const;
 
     /** Determine how to rewrite the content stream to remove the text of the
      * given entries, leaving the text of all the other entries untouched
